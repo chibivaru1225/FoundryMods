@@ -24,12 +24,47 @@ public static class NoLimitShippingSettings
     [ModSettingRequiresRestart]
     public static ModSetting<bool> boostCapacity = new ModSetting<bool>(true);
 
-    [ModSettingIdentifier("capacity_multiplier")]
-    [ModSettingTitle("容量倍率")]
-    [ModSettingDescription("ステーション保管容量に掛ける倍率。デフォルト: 10000")]
+    [ModSettingIdentifier("multiplier_raw_materials")]
+    [ModSettingTitle("容量倍率：生素材 (Raw Materials)")]
+    [ModSettingDescription("鉱石などの生素材カテゴリの保管容量倍率。デフォルト: 10000")]
     [ModSettingRange(1, 100000)]
     [ModSettingRequiresRestart]
-    public static ModSetting<int> capacityMultiplier = new ModSetting<int>(10000);
+    public static ModSetting<int> multiplierRawMaterials = new ModSetting<int>(10000);
+
+    [ModSettingIdentifier("multiplier_resources")]
+    [ModSettingTitle("容量倍率：資源 (Resources)")]
+    [ModSettingDescription("加工素材などの資源カテゴリの保管容量倍率。デフォルト: 10000")]
+    [ModSettingRange(1, 100000)]
+    [ModSettingRequiresRestart]
+    public static ModSetting<int> multiplierResources = new ModSetting<int>(10000);
+
+    [ModSettingIdentifier("multiplier_components")]
+    [ModSettingTitle("容量倍率：部品 (Components)")]
+    [ModSettingDescription("部品カテゴリの保管容量倍率。デフォルト: 10000")]
+    [ModSettingRange(1, 100000)]
+    [ModSettingRequiresRestart]
+    public static ModSetting<int> multiplierComponents = new ModSetting<int>(10000);
+
+    [ModSettingIdentifier("multiplier_construction_material")]
+    [ModSettingTitle("容量倍率：建設資材 (Construction Material)")]
+    [ModSettingDescription("建設資材カテゴリの保管容量倍率。デフォルト: 10000")]
+    [ModSettingRange(1, 100000)]
+    [ModSettingRequiresRestart]
+    public static ModSetting<int> multiplierConstructionMaterial = new ModSetting<int>(10000);
+
+    [ModSettingIdentifier("multiplier_sales_items")]
+    [ModSettingTitle("容量倍率：販売品 (Sales Items)")]
+    [ModSettingDescription("販売品カテゴリの保管容量倍率。デフォルト: 10000")]
+    [ModSettingRange(1, 100000)]
+    [ModSettingRequiresRestart]
+    public static ModSetting<int> multiplierSalesItems = new ModSetting<int>(10000);
+
+    [ModSettingIdentifier("multiplier_mod_added")]
+    [ModSettingTitle("容量倍率：Mod追加アイテム")]
+    [ModSettingDescription("このModで追加した輸送枠（機械・ロジスティクス等）の保管容量倍率。デフォルト: 10000")]
+    [ModSettingRange(1, 100000)]
+    [ModSettingRequiresRestart]
+    public static ModSetting<int> multiplierModAdded = new ModSetting<int>(10000);
 
     [ModSettingIdentifier("show_in_shipping_pad")]
     [ModSettingTitle("シッピングパッドUIに全アイテム表示")]
@@ -70,38 +105,135 @@ public static class NoLimitShippingMod
     {
         if (!NoLimitShippingSettings.boostCapacity) return;
 
-        int multiplier = NoLimitShippingSettings.capacityMultiplier;
-        var seen = new HashSet<ItemCategoryTemplate>();
+        // Build a per-category multiplier map from itemCategoryIdentifier.
+        // One item per category is enough to learn the identifier → category mapping.
+        var catMultiplierMap = new System.Collections.Generic.Dictionary<ItemCategoryTemplate, int>();
         ItemCategoryTemplate fallback = null;
 
         foreach (var kvp in ItemTemplateManager.getAllItemTemplates())
         {
-            var cat = kvp.Value.itemCategory;
-            if (cat != null && seen.Add(cat))
+            var it = kvp.Value;
+            if (it.itemCategory == null || catMultiplierMap.ContainsKey(it.itemCategory)) continue;
+
+            int mult = it.itemCategoryIdentifier switch
             {
-                cat.stationCapacityPerLevel *= multiplier;
-                if (fallback == null) fallback = cat;
-            }
+                "_base_raw_materials"          => NoLimitShippingSettings.multiplierRawMaterials,
+                "_base_resources"              => NoLimitShippingSettings.multiplierResources,
+                "_base_components"             => NoLimitShippingSettings.multiplierComponents,
+                "_base_construction_material"  => NoLimitShippingSettings.multiplierConstructionMaterial,
+                "_base_sales_items"            => NoLimitShippingSettings.multiplierSalesItems,
+                _                              => 1,  // 未知カテゴリは変更なし
+            };
+            catMultiplierMap[it.itemCategory] = mult;
+            if (fallback == null) fallback = it.itemCategory;
         }
 
-        UnityEngine.Debug.Log($"[NoLimitShipping] BoostStationCapacity: {seen.Count} categories x{multiplier}, fallback={fallback?.name ?? "NULL"}");
+        var logSb = new StringBuilder("[NoLimitShipping] BoostStationCapacity:");
+        foreach (var kv in catMultiplierMap)
+        {
+            kv.Key.stationCapacityPerLevel *= kv.Value;
+            logSb.Append($" {kv.Key.name}x{kv.Value}");
+        }
+        UnityEngine.Debug.Log(logSb.ToString());
+        UnityEngine.Debug.Log($"[NoLimitShipping] fallback={fallback?.name ?? "NULL"}");
 
         if (fallback == null) return;
 
-        int assigned = 0;
-        var nocat = new StringBuilder();
+        // Find building materials category.
+        ItemCategoryTemplate buildingMatCat = null;
+        foreach (var kvp in ItemTemplateManager.getAllItemTemplates())
+        {
+            var it = kvp.Value;
+            if (it.itemCategoryIdentifier == "_base_construction_material" && it.itemCategory != null)
+            {
+                buildingMatCat = it.itemCategory;
+                break;
+            }
+        }
+        UnityEngine.Debug.Log($"[NoLimitShipping] buildingMatCat={buildingMatCat?.name ?? "NOT FOUND"}");
+
+        // Find raw materials category (for terrain blocks: dirt, sand, stone, mud).
+        ItemCategoryTemplate rawMaterialsCat = null;
+        foreach (var kvp in ItemTemplateManager.getAllItemTemplates())
+        {
+            var it = kvp.Value;
+            if (it.itemCategoryIdentifier == "_base_raw_materials" && it.itemCategory != null)
+            {
+                rawMaterialsCat = it.itemCategory;
+                break;
+            }
+        }
+        UnityEngine.Debug.Log($"[NoLimitShipping] rawMaterialsCat={rawMaterialsCat?.name ?? "NOT FOUND"}");
+
+        // Find resources category (for science packs).
+        ItemCategoryTemplate resourcesCat = null;
+        foreach (var kvp in ItemTemplateManager.getAllItemTemplates())
+        {
+            var it = kvp.Value;
+            if (it.creativeModeCategory_str == "_base_cmct_resources" && it.itemCategory != null)
+            {
+                resourcesCat = it.itemCategory;
+                break;
+            }
+        }
+        UnityEngine.Debug.Log($"[NoLimitShipping] resourcesCat={resourcesCat?.name ?? "NOT FOUND"}");
+
+        // Dedicated category for remaining mod-added items.
+        // item.itemCategory → modCat (capacity), fallback.list_itemTemplates (UI grouping).
+        int modMultiplier = NoLimitShippingSettings.multiplierModAdded;
+        var modCat = UnityEngine.ScriptableObject.CreateInstance<ItemCategoryTemplate>();
+        modCat.name = "NoLimitShipping";
+        modCat.stationCapacityPerLevel = 100 * modMultiplier;
+
+        int assignedTerrain = 0, assignedBlocks = 0, assignedScience = 0, assignedMod = 0;
         foreach (var kvp in ItemTemplateManager.getAllItemTemplates())
         {
             ItemTemplate item = kvp.Value;
-            if (!item.isHiddenItem && item.itemCategory == null)
+            if (item.isHiddenItem || item.itemCategory != null) continue;
+
+            if (item.creativeModeCategory_str == "_base_cmct_blocks")
             {
-                item.itemCategory = fallback;
+                // Terrain blocks (dirt/sand/stone/mud variants) → raw materials
+                string id = item.identifier ?? "";
+                bool isTerrain = id.Contains("dirt") || id.Contains("sand") ||
+                                 id.Contains("stone") || id.Contains("mud");
+                if (isTerrain && resourcesCat != null)
+                {
+                    item.itemCategory = resourcesCat;
+                    resourcesCat.list_itemTemplates.Add(item);
+                    assignedTerrain++;
+                }
+                else if (buildingMatCat != null)
+                {
+                    // Other building blocks → building materials
+                    item.itemCategory = buildingMatCat;
+                    buildingMatCat.list_itemTemplates.Add(item);
+                    assignedBlocks++;
+                }
+                else
+                {
+                    item.itemCategory = modCat;
+                    fallback.list_itemTemplates.Add(item);
+                    assignedMod++;
+                }
+            }
+            else if (rawMaterialsCat != null && item.creativeModeCategory_str == "_base_cmct_science")
+            {
+                // Science Packs → raw materials category
+                item.itemCategory = rawMaterialsCat;
+                rawMaterialsCat.list_itemTemplates.Add(item);
+                assignedScience++;
+            }
+            else
+            {
+                // Machines, logistics, etc. → NoLimitShipping category (capacity),
+                // fallback list (UI grouping)
+                item.itemCategory = modCat;
                 fallback.list_itemTemplates.Add(item);
-                assigned++;
-                if (nocat.Length < 600) nocat.Append(item.identifier).Append(' ');
+                assignedMod++;
             }
         }
-        UnityEngine.Debug.Log($"[NoLimitShipping] BoostStationCapacity: assigned fallback to {assigned} items: {nocat}");
+        UnityEngine.Debug.Log($"[NoLimitShipping] Assigned {assignedTerrain} terrain→{resourcesCat?.name}, {assignedBlocks} blocks→{buildingMatCat?.name}, {assignedScience} science→{rawMaterialsCat?.name}, {assignedMod} others→NoLimitShipping(x{modMultiplier})");
     }
 }
 
